@@ -157,5 +157,4 @@ foreach ($server in $servers)
         Write-Warning "Unable to access server $server"
         Write-Warning $error[0].Exception
     }
-
 }
