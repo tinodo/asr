@@ -222,7 +222,7 @@ function WaitForRunbook([string] $AutomationAccountName, [string] $runbookName, 
         $job = $job | Get-AzAutomationJob
     }
 
-    $result = $job | Get-AzAutomationJobOutput | Get-AzAutomationJobOutputRecord | Select-Object -ExpandProperty Value
+    $result = $job | Get-AzAutomationJobOutput -Stream Output | Get-AzAutomationJobOutputRecord | Select-Object -ExpandProperty Value
     return $result
 }
 
