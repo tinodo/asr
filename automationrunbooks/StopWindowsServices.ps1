@@ -48,6 +48,8 @@ workflow StopWindowsServices
       $ServerNames
     )
 
+    [OutputType([hashtable])]
+
     $ServicesNeedStopping = @(
         "SQL",
         "NFS",

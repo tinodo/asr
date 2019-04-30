@@ -47,9 +47,11 @@ workflow StopWindowsServers
       $ServerNames
     )
 
-    Write-Verbose "Stopping Windows Servers: $($ServerNames -join ', ')"
+    [OutputType([String[]])]
 
     $Result = @()
+
+    Write-Verbose "Stopping Windows Servers: $($ServerNames -join ', ')"
 
     Foreach -Parallel ($ServerName in $ServerNames)
     {

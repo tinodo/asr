@@ -47,6 +47,8 @@ workflow StopLinuxServers
       [String[]]
       $ServerNames
     )
+    
+    [OutputType([String[]])]
         
     $Credential = Get-AutomationPSCredential -Name "SourceEnvironmentLinuxAdministrator"
 

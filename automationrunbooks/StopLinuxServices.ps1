@@ -47,7 +47,9 @@ workflow StopLinuxServices
       [String[]]
       $ServerNames
     )
- 
+
+    [OutputType([hashtable])]
+    
     $Credential = Get-AutomationPSCredential -Name "SourceEnvironmentLinuxAdministrator"
     $ServicesNeedStopping = @(
         "mysql",
