@@ -48,7 +48,8 @@ $SubscriptionId = ""
 
 # Name of the Azure Recovery Services Vault for Site Recovery
 $AsrVaultName = ""
-# Indication whether to run this workbook on a test failover ($true) or not ($false).
+
+# Indication whether to run this workbook on a test failover ($true) or not ($false).
 $StartRunbookOnTest = $true
 
 # Name of the Certificate to be used to create Recovery Vault Credentials. Could be any certificate.
