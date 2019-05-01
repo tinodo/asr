@@ -50,14 +50,7 @@ workflow StopWindowsServices
 
     [OutputType([hashtable])]
 
-    $ServicesNeedStopping = @(
-        "SQL",
-        "NFS",
-        "SAP",
-        "World Wide Web Publishing",
-        "JBoss",
-        "MySQL"
-    )
+    $ServicesNeedStopping = (Get-AutomationVariable -Name "WindowsServicesToStop").Split(",").ForEach({$_.Trim()})
 
     Write-Verbose "Stopping services on $($ServerNames -join ', ')"
 

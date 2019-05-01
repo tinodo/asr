@@ -51,11 +51,7 @@ workflow StopLinuxServices
     [OutputType([hashtable])]
     
     $Credential = Get-AutomationPSCredential -Name "SourceEnvironmentLinuxAdministrator"
-    $ServicesNeedStopping = @(
-        "mysql",
-        "apache2",
-        "oracle"
-    )
+    $ServicesNeedStopping = (Get-AutomationVariable -Name "LinuxServicesToStop").Split(",").ForEach({$_.Trim()})
 
     Write-Verbose "Stopping services on $($ServerNames -join ', ')"
 

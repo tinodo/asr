@@ -69,6 +69,10 @@ $HybridWorkerGroupName = ""
 $RecoveryPlanName = $RecoveryPlanContext.RecoveryPlanName;
 $GroupId = $RecoveryPlanContext.GroupId
 
+#$RecoveryPlanName = "part2"
+#$GroupId = "Group 1"
+
+
 if (($RecoveryPlanContext.FailoverType -eq "Test") -and (-not $StartRunbookOnTest))
 {
     Write-Output "Not processing runbook because this is a test failover."
@@ -210,9 +214,8 @@ function IsJobTerminalState([string] $status) {
     return $status -eq "Completed" -or $status -eq "Failed" -or $status -eq "Stopped" -or $status -eq "Suspended"
 }
 
-function WaitForRunbook([string] $AutomationAccountName, [string] $runbookName, [string] $AutomationAccountResourceGroupName, [string] $HybridWorkerGroupName, [string[]] $serverNames)
+function WaitForRunbook($job)
 {
-    $job = Start-AzAutomationRunbook -AutomationAccountName $AutomationAccountName -Name $runbookName -ResourceGroupName $AutomationAccountResourceGroupName -RunOn $HybridWorkerGroupName -Parameters @{"ServerNames"=$serverNames}
     $pollingSeconds = 5
     $maxTimeout = 10800
     $waitTime = 0
@@ -264,26 +267,48 @@ function WaitForReplication()
 
 #TODO: This could be done in parallel.
 
-Write-Output "Starting to stop services on Windows Servers..."
-$result1a = WaitForRunbook $AutomationAccountName "StopWindowsServices" $AutomationAccountResourceGroupName $HybridWorkerGroupName $windowsServers
-Write-Output $result1a 
+Write-Output "Starting to stop services on servers..."
 
-Write-Output "Starting to stop services on Linux Servers..."
-$result1b = WaitForRunbook $AutomationAccountName "StopLinuxServices" $AutomationAccountResourceGroupName $HybridWorkerGroupName $linuxServers
+$job1a = Start-AzAutomationRunbook `
+            -AutomationAccountName $AutomationAccountName `
+            -Name "StopWindowsServices" `
+            -ResourceGroupName $AutomationAccountResourceGroupName `
+            -RunOn $HybridWorkerGroupName `
+            -Parameters @{"ServerNames"=$windowsServers}
+$job1b = Start-AzAutomationRunbook `
+            -AutomationAccountName $AutomationAccountName `
+            -Name "StopLinuxServices" `
+            -ResourceGroupName $AutomationAccountResourceGroupName `
+            -RunOn $HybridWorkerGroupName `
+            -Parameters @{"ServerNames"=$linuxServers}
+
+$result1a = WaitForRunbook $job1a
+$result1b = WaitForRunbook $job1b
+
+Write-Output $result1a
 Write-Output $result1b
-
-
 
 WaitForReplication 
 
-#TODO: This could be done in parallel.
+Write-Output "Starting to stop servers..."
 
-Write-Output "Starting to stop Windows Servers..."
-$result2a = WaitForRunbook $AutomationAccountName "StopWindowsServers" $AutomationAccountResourceGroupName $HybridWorkerGroupName $windowsServers
+$job2a = Start-AzAutomationRunbook `
+            -AutomationAccountName $AutomationAccountName `
+            -Name "StopWindowsServers" `
+            -ResourceGroupName $AutomationAccountResourceGroupName `
+            -RunOn $HybridWorkerGroupName `
+            -Parameters @{"ServerNames"=$windowsServers}
+$job2b = Start-AzAutomationRunbook `
+            -AutomationAccountName $AutomationAccountName `
+            -Name "StopLinuxServers" `
+            -ResourceGroupName $AutomationAccountResourceGroupName `
+            -RunOn $HybridWorkerGroupName `
+            -Parameters @{"ServerNames"=$linuxServers}
+
+$result2a = WaitForRunbook $job2a
+$result2b = WaitForRunbook $job2b
+
 Write-Output $result2a
-
-Write-Output "Starting to stop Linux Servers..."
-$result2b = WaitForRunbook $AutomationAccountName "StopLinuxServers" $AutomationAccountResourceGroupName $HybridWorkerGroupName $linuxServers
 Write-Output $result2b
 
 #WaitForReplication 
