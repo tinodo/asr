@@ -53,7 +53,7 @@ $AsrVaultName = ""
 $StartRunbookOnTest = $true
 
 # Name of the Certificate to be used to create Recovery Vault Credentials. Could be any certificate.
-$CertificateName = ""
+$CertificateName = "ASRCertificate"
 
 # Name of the Automation Account this workbook runs under
 $AutomationAccountName = ""
