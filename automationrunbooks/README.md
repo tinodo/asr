@@ -10,18 +10,19 @@ The runbooks that need to be run on the hybrid workers, need to run under local 
 
 ## PreMigrationRunbook.ps1
 This Azure Automation runbook is designed to be called from an Azure Site Recovery Plan as a *Pre-step script action*.  It tries to determine which machines are being migrated (or, better said; failing over) in this job. When the script is called from the *All groups failover: Pre-steps* section, all machines in the recovery plan are target of this runbook. Should the runbook be called from a specific *Group [x]: Pre-steps* section, only the machines in that group are target of the runbook.  
-For the machines in scope of the runbook, the runbook determines whether this is a Linux or a Windows host. On these hosts, critical services are stopped by calling the `StopWindowsServices` and `StopLinuxServices` runbooks. It then waits for a new *Crash-consistent recovery point*. Last, the runbook shuts down the hosts using the `StopWindowsServers` and `StopLinuxServers` runbooks.
+For the machines in scope of the runbook, the runbook determines whether this is a Linux or a Windows host. On these hosts, critical services are stopped by calling the `StopWindowsServices` and `StopLinuxServices` runbooks. It then waits for a new *Crash-consistent recovery point*. Last, the runbook shuts down the hosts using the `StopWindowsServers` and `StopLinuxServers` runbooks.  
 It requires a single Input parameter; `RecoveryPlanContext` which should be provided automatically by the Azure Site Recovery Job running the Recovery Plan.    
 It utilizes a single Azure Automation Certificate; `ASRCertificate` which should hold a valid certificate with private key. It is used to create credentials to connect to the Azure Recovery Services Vault.    
 Within the script itself, the following PowerShell variables should be configured:
 - **$ConnectionName**: Name of the AzureRunAsConnection in the Automation Account
 - **$SubscriptionId**: Subscription Identifier of the subscription the Recovery Vault for Site Recovery is in.
 - **$AsrVaultName**: Name of the Azure Recovery Services Vault for Site Recovery
-- **$StartRunbookOnTest**: Indication whether to run this workbook on a test failover ($true) or not ($false).
+- **$StartRunbookOnTest**: Indication whether to run this workbook on a test failover (`$true`) or not (`$false`).
 - **$CertificateName**: Name of the Azure Automation Certificate to be used to create Recovery Vault Credentials. Could be any certificate. There is no need to change this, when you create an Azure Automation Certificate called `ASRCertificate`
 - **$AutomationAccountName**: Name of the Automation Account this workbook runs under
 - **$AutomationAccountResourceGroupName**: Resource Group where the Automation Account resides
-- **$HybridWorkerGroupName**: Name of the Hybrid Worker Group where on-premises scripts will be executed.
+- **$HybridWorkerGroupName**: Name of the Hybrid Worker Group where on-premises scripts will be executed.  
+
 The scripts outputs all it's logging to the Output-stream. The Output-stream should not be used for other automation.  
 
 ## StopLinuxServers
