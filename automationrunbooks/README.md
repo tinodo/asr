@@ -90,14 +90,14 @@ Within the script itself, the following PowerShell variables should be configure
 
 The scripts outputs all it's logging to the Output-stream. The Output-stream should not be used for other automation.  
 
-## StopLinuxServers
+## StopLinuxServers.ps1
 This Azure Automation runbook, designed to run on a Hybrid Worker, is called from the `PreMigrationRunbook`, but can also be ran individually. It tries to shutdown on one or more Linux hosts.  
 The runbook needs to run on the Hybrid Worker with local administrator privileges, since it will install a PowerShell module (`WinSCP`) whenever it's not available on the host.  
 It requires a single Input parameter; `ServerNames` which should contain an array of strings with hostnames and/or IP addresses of hosts to shutdown. (e.g. `['server1','server2','10.14.22.145']`)  
 The runbook will try to shutdown the Linux hosts by using Sftp. The credentials for the connection come from an Azure Automation Credential called `SourceEnvironmentLinuxAdministrator`. Typically, this is the `root` user on the host.  
 The script will return, on the Output-Stream, an array of strings containing the Linux hosts that accepted the shutdown command.  
 
-## StopLinuxServices
+## StopLinuxServices.ps1
 This Azure Automation runbook, designed to run on a Hybrid Worker, is called from the `PreMigrationRunbook`, but can also be ran individually. It tries to stop services on one or more Linux hosts.  
 The runbook needs to run on the Hybrid Worker with local administrator privileges, since it will install a PowerShell module (`WinSCP`) whenever it's not available on the host.  
 It requires a single Input parameter; `ServerNames` which should contain an array of strings with hostnames and/or IP addresses of hosts to stop the services on. (e.g. `['server1','server2','10.14.22.145']`)  
@@ -109,13 +109,13 @@ The match for the service names is 'loosly'; should the list of `LinuxServicesTo
 
 The script will return, on the Output-Stream, a hashtable which contains one key per host processed and a string array with stopped services as the value.  
 
-## StopWindowsServers
+## StopWindowsServers.ps1
 This Azure Automation runbook, designed to run on a Hybrid Worker, is called from the `PreMigrationRunbook`, but can also be ran individually. It tries to shutdown on one or more Windows hosts.  
 It requires a single Input parameter; `ServerNames` which should contain an array of strings with hostnames and/or IP addresses of hosts to shutdown. (e.g. `['server1','server2','10.14.22.145']`)  
 The runbook will try to shutdown the Windows hosts by using WMI. The account the runbook runs under needs to have the appropriate permissions on the target hosts.  
 The script will return, on the Output-Stream, an array of strings containing the Windows hosts that accepted the shutdown command.  
 
-## StopWindowsServices
+## StopWindowsServices.ps1
 This Azure Automation runbook, designed to run on a Hybrid Worker, is called from the `PreMigrationRunbook`, but can also be ran individually. It tries to stop services on one or more Windows hosts.  
 It requires a single Input parameter; `ServerNames` which should contain an array of strings with hostnames and/or IP addresses of hosts to stop the services on. (e.g. `['server1','server2','10.14.22.145']`)  
 It utilizes a single Azure Automation Variable; `WindowsServicesToStop` which should contain a comma-seperated list of display names of Windows Services. (e.g. `service1,service2,service3`)   
@@ -129,3 +129,28 @@ The match for the service names is 'loosly'; should the list of `WindowsServices
 - SQL Server VSS Writer
 
 The script will return, on the Output-Stream, a hashtable which contains one key per host processed and a string array with stopped services as the value.  
+
+## InstallAzureLinuxAgent.ps1
+This Azure Automation runbook, designed to run on a Hybrid Worker, will install the Azure VM Agent on one or more Linux Hosts.  
+The runbook needs to run on the Hybrid Worker with local administrator privileges, since it will install a PowerShell module (`WinSCP`) whenever it's not available on the host.  
+It requires a single Input parameter; `ServerNames` which should contain an array of strings with hostnames and/or IP addresses of hosts to stop the services on. (e.g. `['server1','server2','10.14.22.145']`)  
+The runbook will try to install the Linux agent on the hosts by using Sftp. The credentials for the connection come from an Azure Automation Credential called `SourceEnvironmentLinuxAdministrator`. Typically, this is the `root` user on the host.  
+The script will return, on the Output-Stream, an array of strings containing the Linux hosts on which the agent has been installed.  
+At this point in time, the file required are expected to exist on the Hybrid Worker node. In the future, I might implement downloading the files from Blob Storage.    
+
+*To be continued...*   
+
+## InstallLinuxMobilityService.ps1  
+This Azure Automation runbook, designed to run on a Hybrid Worker, will install the Mobility Service on one or more Linux Hosts.  
+The runbook needs to run on the Hybrid Worker with local administrator privileges, since it will install a PowerShell module (`WinSCP`) whenever it's not available on the host. Also, it will import the RunAs Certificate to the worker whenever it's not available.  
+It a single Input parameter; `ServerNames` which should contain an array of strings with hostnames and/or IP addresses of hosts to stop the services on. (e.g. `['server1','server2','10.14.22.145']`)  
+The runbook will try to install the Linux agent on the hosts by using Sftp. The credentials for the connection come from an Azure Automation Credential called `SourceEnvironmentLinuxAdministrator`. Typically, this is the `root` user on the host.  
+The script uses the following Automation Variables:  
+
+- **ConfigurationServerIP**: The IP Address of the Configuration Server.
+- **ConfigurationServerPassphrase**: The passphrase to register at the Configuration Server (it is recommended to store this value as an encrypted variable.)
+
+The script will return, on the Output-Stream, an array of strings containing the Linux hosts on which the agent has been installed.  
+At this point in time, the file required are expected to exist on the Hybrid Worker node. In the future, I might implement downloading the files from Blob Storage.    
+
+*To be continued...* 
