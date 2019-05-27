@@ -48,7 +48,7 @@ workflow StopWindowsServices
       $ServerNames
     )
 
-    [OutputType([hashtable])]
+    [OutputType([System.Collections.Hashtable])]
 
     $ServicesNeedStopping = (Get-AutomationVariable -Name "WindowsServicesToStop").Split(",").ForEach({$_.Trim()})
 
@@ -80,7 +80,16 @@ workflow StopWindowsServices
                 }
 
                 $services = Get-Service -ComputerName $Using:ServerName | where {$_.Status -eq "Running"}
+            }
+            catch
+            {
+                Write-Verbose "Failed to process server $Using:ServerName."
+                Write-Error $_.Exception.Message
+                return
+            }
 
+            try
+            {
                 foreach ($service in $services)
                 {
                     $shouldStop = $Using:ServicesNeedStopping | foreach {$isMatch = $false} {$isMatch = $isMatch -or ($service.DisplayName -match $_)} {$isMatch}
@@ -131,8 +140,10 @@ workflow StopWindowsServices
 
             return @{$Using:ServerName = $stoppedServices}
         }
-
-        $Workflow:Result += $Item
+        if ($Item)
+        {
+            [System.Collections.Hashtable]$Workflow:Result += $Item
+        }
     }
 
     Write-Output $Result

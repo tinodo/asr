@@ -20,7 +20,7 @@ Apri, 2019
 
 This script is provided "AS IS" with no warranties, and confers no rights.
 
-Version 1.11
+Version 1.14
 -----------------------------------------------------------------------------#>
 
 workflow PostMigrationRunbook
@@ -39,21 +39,25 @@ workflow PostMigrationRunbook
             Enable = $true
             StorageAccountResourceGroupName = ""
             StorageAccountName = ""
-            StorageContainer = "s"
-            FileName = ""
+            StorageContainer = ""
+            Run = "postmigrationscript.ps1"
+            TypeHandlerVersion  ="1.1"
         }
         Linux = @{
-            Enable = $false
+            Enable = $true
             StorageAccountResourceGroupName = ""
             StorageAccountName = ""
             StorageContainer = ""
-            FileName = ""
+            Run = "sudo sh postmigrationscript.sh"
+            Publisher = "Microsoft.Azure.Extensions"
+            ExtensionType = "CustomScript"
+            TypeHandlerVersion = "2.0"
         }
     }
 
     $Backup = @{
         Enable = $false
-        Start = $true
+        Start = $false
         RecoveryVaultResourceGroupName = ""
         RecoveryVaultName = ""
         BackupPolicyName = ""
@@ -66,15 +70,26 @@ workflow PostMigrationRunbook
     }
 
     $Diagnostics = @{
-        Enable = $true
-        StorageAccountName = ""
-        WindowsPublicConfigVariable = ""    
-        LinuxPublicConfigVariable = ""    
+        Windows = @{
+            Enable = $true
+            StorageAccountName = ""
+            PublicConfigVariable = "WindowsDiagnosticsPublicConfig"    
+        }
+        Linux = @{
+            Enable = $true
+            StorageAccountName = ""
+            StorageAccountResourceGroupName = ""
+            PublicConfigVariable = "LinuxDiagnosticsPublicConfig"
+            Publisher = "Microsoft.Azure.Diagnostics"
+            ExtensionType = "LinuxDiagnostic"
+            TypeHandlerVersion = "3.0"
+        }    
     }
 
     $DiskEncryption = @{
-        Enable = $false
+        Enable = $true
         UseKEK = $true
+        VolumeType = "All" # All, OS or Data
         KeyVaultResourceGroupName = ""
         KeyVaultName = ""
         EncryptionKeyName = ""
@@ -84,7 +99,7 @@ workflow PostMigrationRunbook
         Enable = $false
         StorageAccountResourceGroupName = ""
         StorageAccountName = ""
-        Table = ""
+        Table = "tags"
     }
 
     $ManagedIdentityResourceId = "/subscriptions/xxx/resourceGroups/yyy/providers/Microsoft.ManagedIdentity/userAssignedIdentities/zzz"
@@ -95,6 +110,13 @@ workflow PostMigrationRunbook
             "srv2",
             "srv2-test"
         )
+    }
+
+    $AutomationAccount = @{
+        AutomationAccountName = ""
+        ResourceGroupName = ""
+        RunOn = "SourceEnvironment"
+        InstallAzureLinuxAgentRunbookName = "InstallAzureLinuxAgent"
     }
 
     $Misc = @{
@@ -125,7 +147,7 @@ workflow PostMigrationRunbook
         {
             $StorageAccountKey = Get-AzStorageAccountKey -Name $Configuration.StorageAccountName -ResourceGroupName $Configuration.StorageAccountResourceGroupName 
             $StorageKey = $StorageAccountKey[0].Value
-            $StorageContext = New-AzStorageContext –StorageAccountName $Configuration.StorageAccountName -StorageAccountKey $StorageKey
+            $StorageContext = New-AzStorageContext -StorageAccountName $Configuration.StorageAccountName -StorageAccountKey $StorageKey
 
             if ($OsType -eq "Windows")
             {
@@ -136,7 +158,14 @@ workflow PostMigrationRunbook
                 $blob = Set-AzStorageBlobContent -Container $Configuration.StorageContainer -File $vmAgentFile -Blob $vmAgentFileName -Context $StorageContext -Force
             }
 
-            $files = Get-AzStorageBlob -Container $Configuration.StorageContainer -Context $StorageContext | where {$_.SnapshotTime -eq $null} | select -ExpandProperty Name
+            $allFiles = Get-AzStorageBlob -Container $Configuration.StorageContainer -Context $StorageContext | where {$_.SnapshotTime -eq $null} | select -ExpandProperty Name
+            $files = @()
+            foreach ($file in ($Using:CustomScriptExtension).$OsType.AllFiles)
+            {
+                $files += "`"https://$($Configuration.StorageAccountName).blob.core.windows.net/$($Configuration.StorageContainer)/$file`""
+            }
+
+            $fileUris = $files -join (',')
         }
         catch 
         {
@@ -153,11 +182,8 @@ workflow PostMigrationRunbook
             throw $ErrorMessage
         }
 
-        return @{StorageKey = $StorageKey; AllFiles = $files}
+        return @{StorageKey = $StorageKey; AllFiles = $allFiles; FileUris = $fileUris}
     }
-
-
-
 
     function TryCatch
     {
@@ -312,25 +338,21 @@ workflow PostMigrationRunbook
 
     if ($Diagnostics.Enable)
     {
-        Write-Verbose "Preparing Diagnostics Configuration..."
+        Write-Verbose "Preparing Diagnostics Configuration Files..."
 
-        if ($Diagnostics.WindowsPublicConfigVariable)
+        if ($Diagnostics.Windows.Enable)
         {
-            $PublicConfig = Get-AutomationVariable -Name $Diagnostics.WindowsPublicConfigVariable
-            $PublicConfigFile = $env:TEMP + "\" + "windows_diagnostics_publicconfig.json"
-            Set-Content -Path $PublicConfigFile -Value $PublicConfig -Force
-            $Diagnostics += @{"WindowsPublicConfigFile" = $PublicConfigFile}
+            $WindowsPublicConfig = Get-AutomationVariable -Name $Diagnostics.Windows.PublicConfigVariable
+            $WindowsPublicConfigFile = $env:TEMP + "\" + "windows_diagnostics_publicconfig.json"
+            Set-Content -Path $WindowsPublicConfigFile -Value $WindowsPublicConfig -Force
+            $Diagnostics = InlineScript {
+                $a = $Using:Diagnostics
+                $a.Windows += @{"PublicConfigFile" = $Using:WindowsPublicConfigFile}
+                return $a
+            }
         }
 
-        if ($Diagnostics.LinuxPublicConfigVariable)
-        {
-            $PublicConfig = Get-AutomationVariable -Name $Diagnostics.LinuxPublicConfigVariable
-            $PublicConfigFile = $env:TEMP + "\" + "linux_diagnostics_publicconfig.json"
-            Set-Content -Path $PublicConfigFile -Value $PublicConfig -Force
-            $Diagnostics += @{"LinuxPublicConfigFile" = $PublicConfigFile}
-        }
-
-        Write-Verbose "Diagnostics Configuration Created."
+        Write-Verbose "Diagnostics Configuration Files Created."
     }
 
     #endregion
@@ -340,7 +362,7 @@ workflow PostMigrationRunbook
     $vmMap = $RecoveryPlanContext.VmMap
     $vmInfo = $RecoveryPlanContext.VmMap | Get-Member | Where-Object MemberType -eq NoteProperty | select -ExpandProperty Name
 
-    $Steps = 13
+    $Steps = 14
 
     Foreach -parallel ($vmID in $vmInfo)
     {
@@ -354,6 +376,10 @@ workflow PostMigrationRunbook
             if(!(($VM -eq $null) -Or ($VM.ResourceGroupName -eq $null) -Or ($VM.RoleName -eq $null))) 
             {
                 Write-Output "Processing Virtual Machine $($VM.RoleName) in ResourceGroup $($VM.ResourceGroupName)..."
+
+                #region Get Virtual Machine Details
+                
+                # Gets $azvm, $OsType, $isWindowsVm, $ip
 
                 $tries = 0
                 do
@@ -378,7 +404,65 @@ workflow PostMigrationRunbook
 
                 $OsType = $azvm.StorageProfile.OsDisk.OsType.ToString()
                 $isWindowsVm = ($OsType -eq "Windows")
+                if ($azvm.NetworkProfile.NetworkInterfaces.Length -eq 1)
+                {
+                    $nicId = $azvm.NetworkProfile.NetworkInterfaces[0].Id
+                }
+                else
+                {
+                    $nicId = $azvm.NetworkProfile.NetworkInterfaces | Where {$_.Primary -eq $true} | select -ExpandProperty Id
+                }
+
+                $nic = Get-AzNetworkInterface -ResourceId $nicId 
+                $nicConfig = $nic.IpConfigurations | Where {$_.Primary -eq $true}
+                $ip = $nicConfig.PrivateIpAddress
+                $memoryInGb = [math]::Round((Get-AzVMSize -Location $azvm.Location| where {$_.Name -eq $azvm.HardwareProfile.VmSize} | Select -ExpandProperty MemoryInMb)/1024, 0)
+
+                #endregion
+
                 $errorCount = 0
+
+                #region Install VM Agent on Linux
+
+                if ($isWindowsVm)
+                {
+                    Write-Output "$($VM.RoleName) [1/$($Using:Steps)] - (Skipping Installing VM Agent since this is a Windows VM; these already have the agent installed.)"
+                }
+                else
+                {
+                    Write-Output "$($VM.RoleName) [1/$($Using:Steps)] - Installing VM Agent on Linux machine."
+                    
+                    function IsJobTerminalState([string] $status) {
+                        return $status -eq "Completed" -or $status -eq "Failed" -or $status -eq "Stopped" -or $status -eq "Suspended"
+                    }
+                    
+                    function WaitForRunbook($job)
+                    {
+                        $pollingSeconds = 5
+                        $maxTimeout = 600
+                        $waitTime = 0
+                        while((IsJobTerminalState $job.Status) -eq $false -and $waitTime -lt $maxTimeout) {
+                            Start-Sleep -Seconds $pollingSeconds
+                            $waitTime += $pollingSeconds
+                            $job = $job | Get-AzAutomationJob
+                        }
+
+                        $result = $job | Get-AzAutomationJobOutput -Stream Output | Get-AzAutomationJobOutputRecord | Select-Object -ExpandProperty Value
+                        return $result
+                    }
+
+                    $job = Start-AzAutomationRunbook `
+                                -AutomationAccountName $Using:AutomationAccount.AutomationAccountName `
+                                -Name $Using:AutomationAccount.InstallAzureLinuxAgentRunbookName `
+                                -ResourceGroupName $Using:AutomationAccount.ResourceGroupName `
+                                -RunOn $Using:AutomationAccount.RunOn `
+                                -Parameters @{"ServerNames"=@($ip)}
+                    $jobResult = WaitForRunbook $job
+
+                    #Write-Verbose $jobResult
+                    #TODO: Check result
+                }
+                #endregion
 
                 #region Enable Hybrid Use Benefit
 
@@ -386,19 +470,19 @@ workflow PostMigrationRunbook
                 {
                     if ($isWindowsVm)
                     {
-                        Write-Output "$($VM.RoleName) [1/$($Using:Steps)] - Enabling Hybrid Use Benefit." 
+                        Write-Output "$($VM.RoleName) [2/$($Using:Steps)] - Enabling Hybrid Use Benefit." 
 
                         $azvm.LicenseType = "Windows_Server"
                         $AzVmResult = Update-AzVM -ResourceGroupName $VM.ResourceGroupName -VM $azvm
                     }
                     else
                     {
-                        Write-Output "$($VM.RoleName) [1/$($Using:Steps)] - (Skipping Enabling Hybrid Use Benefit - Not applicable to $($azvm.StorageProfile.OsDisk.OsType) Virtual Machines.)" 
+                        Write-Output "$($VM.RoleName) [2/$($Using:Steps)] - (Skipping Enabling Hybrid Use Benefit - Not applicable to $($azvm.StorageProfile.OsDisk.OsType) Virtual Machines.)" 
                     }
                 }
                 else
                 {
-                    Write-Output "$($VM.RoleName) [1/$($Using:Steps)] - (Skipping Enabling Hybrid Use Benefit as per Configuration.)" 
+                    Write-Output "$($VM.RoleName) [2/$($Using:Steps)] - (Skipping Enabling Hybrid Use Benefit as per Configuration.)" 
                 }
 
                 #endregion
@@ -407,7 +491,7 @@ workflow PostMigrationRunbook
 
                 if ($Using:BootDiagnostics.Enable)
                 {
-                    Write-Output "$($VM.RoleName) [2/$($Using:Steps)] - Enabling Boot Diagnostics." 
+                    Write-Output "$($VM.RoleName) [3/$($Using:Steps)] - Enabling Boot Diagnostics." 
 
                     $AzVMBootDiagnosticsResult = Set-AzVMBootDiagnostics -VM $azvm -Enable -ResourceGroupName $Using:BootDiagnostics.StorageAccountResourceGroupName -StorageAccountName $Using:BootDiagnostics.StorageAccountName
                 }
@@ -420,35 +504,56 @@ workflow PostMigrationRunbook
 
                 #region Install Diagnostics Extension
 
-                if ($Using:Diagnostics.Enable)
+                if ($Using:Diagnostics.Windows.Enable -or $Using:Diagnostics.Linux.Enable)
                 {
-                    Write-Output "$($VM.RoleName) [3/$($Using:Steps)] - Installing Diagnostics Extension." 
+                    Write-Output "$($VM.RoleName) [4/$($Using:Steps)] - Installing Diagnostics Extension." 
 
-                    if ($isWindowsVm -and $Using:Diagnostics.WindowsPublicConfigFile)
+                    try
                     {
-                        $DiagnosticsConfigurationPath = $Using:Diagnostics.WindowsPublicConfigFile
-                    }
-                    elseif ($Using:Diagnostics.LinuxPublicConfigFile)
-                    {
-                        $DiagnosticsConfigurationPath = $Using:Diagnostics.LinuxPublicConfigFile
-                    }
+                        if ($isWindowsVm -and $Using:Diagnostics.Windows.Enable)
+                        {
+                            $DiagnosticsConfigurationPath = $Using:Diagnostics.Windows.PublicConfigFile
+                            $AzVMDiagnosticsExtensionResult = Set-AzVMDiagnosticsExtension `
+                                -ResourceGroupName $VM.ResourceGroupName `
+                                -VMName $VM.RoleName `
+                                -DiagnosticsConfigurationPath $DiagnosticsConfigurationPath `
+                                -StorageAccountName $Using:Diagnostics.Windows.StorageAccountName
+                        }
+                        elseif ((-not $isWindowsVm) -and $Using:Diagnostics.Linux.Enable)
+                        {
+                            $StorageAccountKey = Get-AzStorageAccountKey -Name $Using:Diagnostics.Linux.StorageAccountName -ResourceGroupName $Using:Diagnostics.Linux.StorageAccountResourceGroupName 
+                            $StorageKey = $StorageAccountKey[0].Value
+                            $StorageContext = New-AzStorageContext -StorageAccountName $Using:Diagnostics.Linux.StorageAccountName -StorageAccountKey $StorageKey
+                            $sasToken = (New-AzStorageAccountSASToken -Service Blob,Table -ResourceType Container,Object -Permission wlacu -Context $StorageContext.Context).Substring(1)
 
-                    if ($DiagnosticsConfigurationPath)
-                    {
-                        $AzVMDiagnosticsExtensionResult = Set-AzVMDiagnosticsExtension `
-                            -ResourceGroupName $VM.ResourceGroupName `
-                            -VMName $VM.RoleName `
-                            -DiagnosticsConfigurationPath $DiagnosticsConfigurationPath `
-                            -StorageAccountName $Using:Diagnostics.StorageAccountName
+                            $PublicConfig = Get-AutomationVariable -Name $Using:Diagnostics.Linux.PublicConfigVariable
+                            $PublicConfig = $PublicConfig.Replace("__DIAGNOSTIC_STORAGE_ACCOUNT__", $Using:Diagnostics.Linux.StorageAccountName)
+                            $PublicConfig = $PublicConfig.Replace("__VM_RESOURCE_ID__", $azvm.Id)
+
+                            $PrivateConfig = "{'storageAccountName': '$($Using:Diagnostics.Linux.StorageAccountName)', 'storageAccountSasToken': '$sasToken'}"
+
+                            $AzVMDExtensionResult = Set-AzVMExtension `
+                                -ResourceGroupName $VM.ResourceGroupName `
+                                -VMName $VM.RoleName `
+                                -Publisher $Using:Diagnostics.Linux.Publisher `
+                                -ExtensionType $Using:Diagnostics.Linux.ExtensionType `
+                                -TypeHandlerVersion $Using:Diagnostics.Linux.TypeHandlerVersion `
+                                -SettingString $PublicConfig `
+                                -ProtectedSettingString $PrivateConfig `
+                                -Name "DiagnosticsConfig" `
+                                -Location $azvm.Location                       
+                        }
                     }
-                    else
+                    catch
                     {
-                        Write-Output "$($VM.RoleName) [3/$($Using:Steps)] - (Skipping Installing Diagnostics Extension as per missing Configuration item.)" 
+                        Write-Error -Message $_.Exception.Message
+                        Write-Output $_.Exception.Message
+                        Write-Output $_.Exception
                     }
                 }
                 else
                 {
-                    Write-Output "$($VM.RoleName) [3/$($Using:Steps)] - (Skipping Installing Diagnostics Extension as per Configuration.)" 
+                    Write-Output "$($VM.RoleName) [4/$($Using:Steps)] - (Skipping Installing Diagnostics Extension as per Configuration.)" 
                 }
 
                 #endregion
@@ -457,24 +562,21 @@ workflow PostMigrationRunbook
                 
                 if ($Using:Misc.EnableStaticIp)
                 {
-                    Write-Output "$($VM.RoleName) [4/$($Using:Steps)] - Setting Private IP Address to Static." 
+                    Write-Output "$($VM.RoleName) [5/$($Using:Steps)] - Setting Private IP Address to Static." 
 
-                    $nicId = $azvm.NetworkProfile.NetworkInterfaces[0].Id
-                    $nicName = $nicId.Substring($nicId.LastIndexOf("/") + 1)
-                    $nic = Get-AzNetworkInterface -Name $nicName -ResourceGroup $VM.ResourceGroupName 
-                    $nic.IpConfigurations[0].PrivateIpAllocationMethod = 'Static'
+                    $nicConfig.PrivateIpAllocationMethod = 'Static'
                     $AzNetworkInterfaceResult = Set-AzNetworkInterface -NetworkInterface $nic
                 }
                 else
                 {
-                    Write-Output "$($VM.RoleName) [4/$($Using:Steps)] - (Skipping Setting Private IP Address to Static as per Configuration.)" 
+                    Write-Output "$($VM.RoleName) [5/$($Using:Steps)] - (Skipping Setting Private IP Address to Static as per Configuration.)" 
                 }
 
                 #endregion
 
                 #region Add a Managed User Principal to the VM
                 
-                Write-Output "$($VM.RoleName) [5/$($Using:Steps)] - Adding User Managed Principal." 
+                Write-Output "$($VM.RoleName) [6/$($Using:Steps)] - Adding User Managed Principal." 
                 
                 $tries = 0
                 $addedManagedIdentity = $false
@@ -487,15 +589,15 @@ workflow PostMigrationRunbook
                     }
                     catch
                     {
-                        Write-Error -Message "$($VM.RoleName) [5/$($Using:Steps)] - $($_.Exception)"
-                        Write-Output "$($VM.RoleName) [5/$($Using:Steps)] - [Adding User Managed Principal Failed. Retrying.]"
+                        Write-Error -Message "$($VM.RoleName) [6/$($Using:Steps)] - $($_.Exception)"
+                        Write-Output "$($VM.RoleName) [6/$($Using:Steps)] - [Adding User Managed Principal Failed. Retrying.]"
                         $tries++
                     }
                 } while (($tries -lt $Using:Misc.MaxTries) -and (-not $addedManagedIdentity))
 
                 if (-not $addedManagedIdentity)
                 {
-                    Write-Output "$($VM.RoleName) [5/$($Using:Steps)] - [Failed to Add User Managed Principal.]"
+                    Write-Output "$($VM.RoleName) [6/$($Using:Steps)] - [Failed to Add User Managed Principal.]"
                     $errorCount++
                 }
 
@@ -505,7 +607,7 @@ workflow PostMigrationRunbook
 
                 if ($Using:SAP.Servers -contains $VM.RoleName)
                 {
-                    Write-Output "$($VM.RoleName) [6/$($Using:Steps)] - Installing SAP Monitoring Extension." 
+                    Write-Output "$($VM.RoleName) [7/$($Using:Steps)] - Installing SAP Monitoring Extension." 
 
                     $tries = 0
                     do
@@ -521,30 +623,30 @@ workflow PostMigrationRunbook
                         }
                         catch
                         {
-                            Write-Error -Message "$($VM.RoleName) [6/$($Using:Steps)] - $($_.Exception)"
-                            Write-Output "$($VM.RoleName) [6/$($Using:Steps)] - [Installing SAP Monitoring Extension Failed. Retrying.]"
+                            Write-Error -Message "$($VM.RoleName) [7/$($Using:Steps)] - $($_.Exception)"
+                            Write-Output "$($VM.RoleName) [7/$($Using:Steps)] - [Installing SAP Monitoring Extension Failed. Retrying.]"
                             $tries++
                         }
                     } while (($tries -lt $Using:Misc.MaxTries) -and (-not $AzVMAEMExtensionResult))
 
                     if (-not $AzVMAEMExtensionResult)
                     {
-                        Write-Output "$($VM.RoleName) [6/$($Using:Steps)] - [Failed to install SAP Monitoring Extension.]"
+                        Write-Output "$($VM.RoleName) [7/$($Using:Steps)] - [Failed to install SAP Monitoring Extension.]"
                         $errorCount++
                     }
                 }
                 else
                 {
-                    Write-Output "$($VM.RoleName) [6/$($Using:Steps)] - (Skipping SAP Monitoring Extension installation.)" 
+                    Write-Output "$($VM.RoleName) [7/$($Using:Steps)] - (Skipping SAP Monitoring Extension installation.)" 
                 }
 
                 #endregion
                 
                 #region Install the CustomScriptExtension on the VM
 
-                Write-Output "$($VM.RoleName) [7/$($Using:Steps)] - Installing CustomScriptExtension."  
+                Write-Output "$($VM.RoleName) [8/$($Using:Steps)] - Installing CustomScriptExtension."  
 
-                if (($isWindowsVm -and $Using:CustomScriptExtension.Windows.Enable) -or ((-not $isWindowsVm) -and $Using:CustomScriptExtension.Linux.Enable))
+                if ($isWindowsVm -and $Using:CustomScriptExtension.Windows.Enable)
                 {
                     $AzVMCustomScriptExtensionResult = $azvm | Set-AzVMCustomScriptExtension `
                         -Name "CustomScriptExtension" `
@@ -554,69 +656,122 @@ workflow PostMigrationRunbook
                         -StorageAccountKey ($Using:CustomScriptExtension).$OsType.StorageKey `
                         -ContainerName ($Using:CustomScriptExtension).$OsType.StorageContainer `
                         -FileName ($Using:CustomScriptExtension).$OsType.AllFiles `
-                        -Run ($Using:CustomScriptExtension).$OsType.FileName
+                        -TypeHandlerVersion ($Using:CustomScriptExtension).$OsType.TypeHandlerVersion `
+                        -Run ($Using:CustomScriptExtension).$OsType.Run
                 }
-                
+                elseif ((-not $isWindowsVm) -and $Using:CustomScriptExtension.Linux.Enable)
+                {
+                    #$AzVMCustomScriptExtensionResult = $azvm | Set-AzVMCustomScriptExtension `
+                    #    -Name "CustomScriptExtension" `
+                    #    -VMName $VM.RoleName `
+                    #    -ResourceGroupName $VM.ResourceGroupName `
+                    #    -StorageAccountName ($Using:CustomScriptExtension).$OsType.StorageAccountName `
+                    #    -StorageAccountKey ($Using:CustomScriptExtension).$OsType.StorageKey `
+                    #    -ContainerName ($Using:CustomScriptExtension).$OsType.StorageContainer `
+                    #    -FileName ($Using:CustomScriptExtension).$OsType.AllFiles `
+                    #    -TypeHandlerVersion ($Using:CustomScriptExtension).$OsType.TypeHandlerVersion `
+                    #    -Run ($Using:CustomScriptExtension).$OsType.Run
+
+                    $commandToExecute = ($Using:CustomScriptExtension).$OsType.Run
+                    $storageAccountName = ($Using:CustomScriptExtension).$OsType.StorageAccountName
+                    $storageAccountKey = ($Using:CustomScriptExtension).$OsType.StorageKey
+                    $containerName = ($Using:CustomScriptExtension).$OsType.StorageContainer
+
+                    $fileUris = $Using:CustomScriptExtension.Linux.FileUris
+                    $PublicConfig = "{`"fileUris`":[$fileUris],`"commandToExecute`":`"$commandToExecute`"}"
+                    $PrivateConfig = "{`"storageAccountName`": `"$storageAccountName`",`"storageAccountKey`": `"$storageAccountKey`"}"
+
+                    $AzVMDExtensionResult = Set-AzVMExtension `
+                        -ResourceGroupName $VM.ResourceGroupName `
+                        -VMName $VM.RoleName `
+                        -Publisher $Using:CustomScriptExtension.Linux.Publisher `
+                        -ExtensionType $Using:CustomScriptExtension.Linux.ExtensionType `
+                        -TypeHandlerVersion $Using:CustomScriptExtension.Linux.TypeHandlerVersion `
+                        -SettingString $PublicConfig `
+                        -ProtectedSettingString $PrivateConfig `
+                        -Name "CustomScriptExtension" `
+                        -Location $azvm.Location
+                    
+                    #https://github.com/Azure/custom-script-extension-linux
+                }
                 #endregion
 
                 #region Enable Disk Encryption
-
+                # For LINUX:
+                # The command will fail unless a snapshot of the managed disk is in place.
+                # Keyvault needs to be in the same region as the vm
+                # don't ssh into a linux machine when encryption is in progress.
+                # cannot disble encryption of os disk on linux.
+                # cannot switch from AAD Encryption to normal encryption
+                # More: https://docs.microsoft.com/en-us/azure/security/azure-security-disk-encryption-linux
+                
                 if ($Using:DiskEncryption.Enable)
                 {
-                    Write-Output "$($VM.RoleName) [8/$($Using:Steps)] - Enabling Disk Encryption."
-
-                    $KeyVault = Get-AzKeyVault -VaultName $Using:DiskEncryption.KeyVaultName -ResourceGroupName $Using:DiskEncryption.KeyVaultResourceGroupName
-
-                    $tries = 0
-                    do
+                    if ((($Using:DiskEncryption.VolumeType -eq "All") -or ($Using:DiskEncryption.VolumeType -eq "OS")) -and ($memoryInGb -lt 7))
                     {
-                        try
-                        {
-                            if ($Using:DiskEncryption.UseKEK)
-                            {
-                                $EncryptionKeyUrl = (Get-AzKeyVaultKey -VaultName $Using:DiskEncryption.KeyVaultName -Name $Using:DiskEncryption.EncryptionKeyName).Key.kid
-
-                                $AzVMDiskEncryptionExtensionResult = Set-AzVMDiskEncryptionExtension `
-                                    -ResourceGroupName $VM.ResourceGroupName `
-                                    -VMName $VM.RoleName `
-                                    -DiskEncryptionKeyVaultUrl $KeyVault.VaultUri `
-                                    -DiskEncryptionKeyVaultId $KeyVault.ResourceId `
-                                    -KeyEncryptionKeyUrl $EncryptionKeyUrl `
-                                    -KeyEncryptionKeyVaultId $KeyVault.ResourceId `
-                                    -Force `
-                                    -ErrorAction Stop
-                            }
-                            else
-                            {
-                                $AzVMDiskEncryptionExtensionResult = Set-AzVMDiskEncryptionExtension `
-                                    -ResourceGroupName $VM.ResourceGroupName `
-                                    -VMName $VM.RoleName `
-                                    -DiskEncryptionKeyVaultUrl $KeyVault.VaultUri `
-                                    -DiskEncryptionKeyVaultId $KeyVault.ResourceId `
-                                    -Force `
-                                    -ErrorAction Stop
-                            }
-                        }
-                        catch
-                        {
-                            Write-Error -Message "$($VM.RoleName) [8/$($Using:Steps)] - $($_.Exception)"
-                            Write-Output "$($VM.RoleName) [8/$($Using:Steps)] - [Enabling Disk Encryption Failed. Retrying.]"
-                            $tries++
-                        }
-                    } while (($tries -lt $Using:Misc.MaxTries) -and (-not $AzVMDiskEncryptionExtensionResult))
-
-                    if (-not $AzVMDiskEncryptionExtensionResult)
-                    {
-                        Write-Output "$($VM.RoleName) [8/$($Using:Steps)] - [Failed to Enabling Disk Encryption.]"
-                        $errorCount++
+                        Write-Output "$($VM.RoleName) [9/$($Using:Steps)] - [Cannot enable Disk Encryption on OS volume due to insufficient memory.]"
+                        Write-Error -Message "$($VM.RoleName) [9/$($Using:Steps)] - [Cannot enable Disk Encryption on OS volume due to insufficient memory.]"
                     }
- 
+                    else
+                    {
+                        Write-Output "$($VM.RoleName) [9/$($Using:Steps)] - Enabling Disk Encryption."
+
+                        $KeyVault = Get-AzKeyVault -VaultName $Using:DiskEncryption.KeyVaultName -ResourceGroupName $Using:DiskEncryption.KeyVaultResourceGroupName
+                        
+                        $tries = 0
+                        do
+                        {
+                            try
+                            {
+                                if ($Using:DiskEncryption.UseKEK)
+                                {
+                                    $EncryptionKeyUrl = (Get-AzKeyVaultKey -VaultName $Using:DiskEncryption.KeyVaultName -Name $Using:DiskEncryption.EncryptionKeyName).Key.kid
+
+                                    $AzVMDiskEncryptionExtensionResult = Set-AzVMDiskEncryptionExtension `
+                                        -ResourceGroupName $VM.ResourceGroupName `
+                                        -VMName $VM.RoleName `
+                                        -DiskEncryptionKeyVaultUrl $KeyVault.VaultUri `
+                                        -DiskEncryptionKeyVaultId $KeyVault.ResourceId `
+                                        -KeyEncryptionKeyUrl $EncryptionKeyUrl `
+                                        -KeyEncryptionKeyVaultId $KeyVault.ResourceId `
+                                        -VolumeType $Using:DiskEncryption.VolumeType `
+                                        -SkipVmBackup `
+                                        -Force `
+                                        -ErrorAction Stop
+                                }
+                                else
+                                {
+                                    $AzVMDiskEncryptionExtensionResult = Set-AzVMDiskEncryptionExtension `
+                                        -ResourceGroupName $VM.ResourceGroupName `
+                                        -VMName $VM.RoleName `
+                                        -DiskEncryptionKeyVaultUrl $KeyVault.VaultUri `
+                                        -DiskEncryptionKeyVaultId $KeyVault.ResourceId `
+                                        -VolumeType $Using:DiskEncryption.VolumeType `
+                                        -SkipVmBackup `
+                                        -Force `
+                                        -ErrorAction Stop
+                                }
+                            }
+                            catch
+                            {
+                                Write-Error -Message "$($VM.RoleName) [9/$($Using:Steps)] - $($_.Exception)"
+                                Write-Output "$($VM.RoleName) [9/$($Using:Steps)] - [Enabling Disk Encryption Failed. Retrying.]"
+                                $tries++
+                            }
+                        } while (($tries -lt $Using:Misc.MaxTries) -and (-not $AzVMDiskEncryptionExtensionResult))
+
+                        if (-not $AzVMDiskEncryptionExtensionResult)
+                        {
+                            Write-Output "$($VM.RoleName) [9/$($Using:Steps)] - [Failed to Enabling Disk Encryption.]"
+                            $errorCount++
+                        }
+                    }
                     # Linux: -SkipVmBackup
                     #-VolumeType Specifies the type of virtual machine volumes to perform the encryption operation. Allowed values for virtual machines that run the Windows operating system are as follows: All, OS, and Data. The allowed values for Linux virtual machines are as follows: Data only.
                 }
                 else
                 {
-                    Write-Output "$($VM.RoleName) [8/$($Using:Steps)] - (Skipping Disk Encryption as per Configuration.)"
+                    Write-Output "$($VM.RoleName) [9/$($Using:Steps)] - (Skipping Disk Encryption as per Configuration.)"
                 }
 
                 #endregion
@@ -625,7 +780,7 @@ workflow PostMigrationRunbook
                                
                 if ($Using:Backup.Enable)
                 {
-                    Write-Output "$($VM.RoleName) [9/$($Using:Steps)] - Enabling Azure Backup."
+                    Write-Output "$($VM.RoleName) [10/$($Using:Steps)] - Enabling Azure Backup."
 
                     $tries = 0
                     $enabledAzureBackup = $false
@@ -644,21 +799,21 @@ workflow PostMigrationRunbook
                         }
                         catch
                         {
-                            Write-Error -Message "$($VM.RoleName) [9/$($Using:Steps)] - $($_.Exception)"
-                            Write-Output "$($VM.RoleName) [9/$($Using:Steps)] - [Enabling Azure Backup Failed. Retrying.]"
+                            Write-Error -Message "$($VM.RoleName) [10/$($Using:Steps)] - $($_.Exception)"
+                            Write-Output "$($VM.RoleName) [10/$($Using:Steps)] - [Enabling Azure Backup Failed. Retrying.]"
                             $tries++
                         }
                     } while (($tries -lt $Using:Misc.MaxTries) -and (-not $enabledAzureBackup))
 
                     if (-not $enabledAzureBackup)
                     {
-                        Write-Output "$($VM.RoleName) [9/$($Using:Steps)] - [Failed to Enabling Azure Backup.]"
+                        Write-Output "$($VM.RoleName) [10/$($Using:Steps)] - [Failed to Enabling Azure Backup.]"
                         $errorCount++
                     }
                 }
                 else
                 {
-                    Write-Output "$($VM.RoleName) [9/$($Using:Steps)] - (Skipping Enabling Azure Backup as per Configuration)."
+                    Write-Output "$($VM.RoleName) [10/$($Using:Steps)] - (Skipping Enabling Azure Backup as per Configuration)."
                 }
 
                 #endregion
@@ -667,13 +822,13 @@ workflow PostMigrationRunbook
                 
                 if ($addedManagedIdentity)
                 {
-                    Write-Output "$($VM.RoleName) [10/$($Using:Steps)] - Removing User Managed Principal."  
+                    Write-Output "$($VM.RoleName) [11/$($Using:Steps)] - Removing User Managed Principal."  
                 
                     $AzVmResult3 = Update-AzVM -ResourceGroupName $VM.ResourceGroupName -VM $azvm -IdentityType None
                 }
                 else
                 {
-                    Write-Output "$($VM.RoleName) [10/$($Using:Steps)] - (Skipping Removing User Managed Principal; the Identity was not added successfully previously.)" 
+                    Write-Output "$($VM.RoleName) [11/$($Using:Steps)] - (Skipping Removing User Managed Principal; the Identity was not added successfully previously.)" 
                 }
 
                 #endregion
@@ -682,7 +837,7 @@ workflow PostMigrationRunbook
 
                 if ($Using:Tagging.Enable)
                 {
-                    Write-Output "$($VM.RoleName) [11/$($Using:Steps)] - Setting Tags on Resources." 
+                    Write-Output "$($VM.RoleName) [12/$($Using:Steps)] - Setting Tags on Resources." 
 
                     try
                     {
@@ -715,14 +870,14 @@ workflow PostMigrationRunbook
                 }
                 else
                 {
-                    Write-Output "$($VM.RoleName) [11/$($Using:Steps)] - (Skipping Setting Tags on Resources as per Configuration.)" 
+                    Write-Output "$($VM.RoleName) [12/$($Using:Steps)] - (Skipping Setting Tags on Resources as per Configuration.)" 
                 }
 
                 #endregion
 
                 #region Restart Virtual Machine
                 
-                Write-Output "$($VM.RoleName) [12/$($Using:Steps)] - Restarting Virtual Machine." 
+                Write-Output "$($VM.RoleName) [13/$($Using:Steps)] - Restarting Virtual Machine." 
                 
                 $AzVmResult4 = Restart-AzVM -Id $azvm.Id
 
@@ -734,7 +889,7 @@ workflow PostMigrationRunbook
                 {
                     if ($enabledAzureBackup)
                     {
-                        Write-Output "$($VM.RoleName) [13/$($Using:Steps)] - Starting Backup." 
+                        Write-Output "$($VM.RoleName) [14/$($Using:Steps)] - Starting Backup." 
                 
                         $BackupContainer = Get-AzRecoveryServicesBackupContainer -ContainerType "AzureVM" -FriendlyName $VM.RoleName -VaultId $Using:Backup.RecoveryServicesVaultId
                         $BackupItem = Get-AzRecoveryServicesBackupItem -Container $BackupContainer -WorkloadType "AzureVM" -VaultId $Using:Backup.RecoveryServicesVaultId
@@ -742,12 +897,12 @@ workflow PostMigrationRunbook
                     }
                     else
                     {
-                        Write-Output "$($VM.RoleName) [13/$($Using:Steps)] - (Skipping Starting Backup; Azure Backup was not enabled successfully previously.)" 
+                        Write-Output "$($VM.RoleName) [14/$($Using:Steps)] - (Skipping Starting Backup; Azure Backup was not enabled successfully previously.)" 
                     }
                 }
                 else
                 {
-                    Write-Output "$($VM.RoleName) [13/$($Using:Steps)] - (Skipping Starting Backup as per Configuration.)" 
+                    Write-Output "$($VM.RoleName) [14/$($Using:Steps)] - (Skipping Starting Backup as per Configuration.)" 
                 }
 
                 #endregion

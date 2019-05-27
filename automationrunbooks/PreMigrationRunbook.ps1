@@ -56,13 +56,13 @@ $StartRunbookOnTest = $true
 $CertificateName = "ASRCertificate"
 
 # Name of the Automation Account this workbook runs under
-$AutomationAccountName = ""
+$AutomationAccountName = "ASRDemoAutomationAccount"
 
 # Resource Group where the Automation Account resides
 $AutomationAccountResourceGroupName = ""
 
 # Name of the Hybrid Worker Group where on-premises scripts will be executed.
-$HybridWorkerGroupName = ""
+$HybridWorkerGroupName = "SourceEnvironment"
 
 
 
@@ -229,7 +229,7 @@ function WaitForRunbook($job)
     return $result
 }
 
-function WaitForReplication()
+function WaitForReplication($serverNames)
 {
     $start = Get-Date
     $future = $start + (New-TimeSpan -Hours 2)
@@ -241,6 +241,12 @@ function WaitForReplication()
         $done = $true
         foreach ($ReplicationProtectedItem in $RelevantReplicationProtectedItems)
         {
+            $friendlyName = $ReplicationProtectedItem | select -ExpandProperty FriendlyName
+            if (-not ($serverNames -contains $friendlyName))
+            {
+                continue
+            }
+
             $RecoveryPoints = Get-AzRecoveryServicesAsrRecoveryPoint -ReplicationProtectedItem $ReplicationProtectedItem
             $AppConsistentRecoveryPoints = $RecoveryPoints | where {$_.RecoveryPointType -eq "AppConsistent"} |  Sort-Object -Property RecoveryPointTime -Descending
             $CrashConsistentRecoveryPoints = $RecoveryPoints | where {$_.RecoveryPointType -eq "CrashConsistent"} |  Sort-Object -Property RecoveryPointTime -Descending
@@ -285,10 +291,32 @@ $job1b = Start-AzAutomationRunbook `
 $result1a = WaitForRunbook $job1a
 $result1b = WaitForRunbook $job1b
 
-Write-Output $result1a
-Write-Output $result1b
+$serversWithStoppedServices = @()
 
-WaitForReplication 
+$result1a.Remove("PSComputerName")
+$result1a.Remove("PSSourceJobInstanceId")
+$result1a.Remove("PSShowComputerName")
+
+foreach ($name in $result1a.Keys)
+{
+    $serversWithStoppedServices += $name
+    $values = $result1a.$name
+    Write-Output "Services stopped on Windows Server $name`: $($values -join ', ')"
+}
+
+$result1b.Remove("PSComputerName")
+$result1b.Remove("PSSourceJobInstanceId")
+$result1b.Remove("PSShowComputerName")
+
+foreach ($name in $result1b.Keys)
+{
+    $serversWithStoppedServices += $name
+    $values = $result1b.$name
+    Write-Output "Services stopped on Linux Server $name`: $($values -join ', ')"
+}
+
+#TODO: If machines were already shut down, this loops until the timeout. Only check for running machines.
+WaitForReplication $serversWithStoppedServices
 
 Write-Output "Starting to stop servers..."
 
@@ -308,9 +336,32 @@ $job2b = Start-AzAutomationRunbook `
 $result2a = WaitForRunbook $job2a
 $result2b = WaitForRunbook $job2b
 
-Write-Output $result2a
-Write-Output $result2b
+$windowsServersStopped = @()
+
+foreach ($result in $result2a)
+{
+    foreach ($item in $result["value"])
+    {
+        $windowsServersStopped += $item
+    }
+}
+
+$linuxServersStopped = @()
+
+foreach ($result in $result2b)
+{
+    foreach ($item in $result["value"])
+    {
+        $linuxServersStopped += $item
+    }
+}
+
+Write-Output "Windows servers stopped: $($windowsServersStopped -join ', ')"
+Write-Output "Linux servers stopped: $($linuxServersStopped -join ', ')"
 
 #WaitForReplication 
+$finalWait = (Get-Date) + (New-TimeSpan -Minutes 5)
+Write-Output "Sleeping for 5 minutes. (until $finalWait)"
+Start-Sleep -Seconds 300
 
 Write-Output "Done."

@@ -47,7 +47,7 @@ workflow StopWindowsServers
       $ServerNames
     )
 
-    [OutputType([String[]])]
+    [OutputType([String])]
 
     $Result = @()
 
@@ -71,7 +71,7 @@ workflow StopWindowsServers
 
         if ($Item)
         {
-            $Workflow:Result += $Item
+            [string[]]$Workflow:Result += $Item
         }
     }
 

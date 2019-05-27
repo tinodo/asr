@@ -48,7 +48,7 @@ workflow StopLinuxServers
       $ServerNames
     )
     
-    [OutputType([String[]])]
+    [OutputType([String])]
         
     $Credential = Get-AutomationPSCredential -Name "SourceEnvironmentLinuxAdministrator"
 
@@ -63,7 +63,7 @@ workflow StopLinuxServers
 
     ForEach -Parallel ($ServerName in $ServerNames)
     {
-        $Workflow:Result += InlineScript
+        $Item = InlineScript
         {
             Import-Module -Name WinSCP -Verbose:$false
 
@@ -110,6 +110,11 @@ workflow StopLinuxServers
             {
                 return $Using:ServerName
             }
+        }
+
+        if ($Item)
+        {
+            [string[]]$Workflow:Result += $Item
         }
     }
 

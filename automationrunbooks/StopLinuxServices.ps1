@@ -48,7 +48,7 @@ workflow StopLinuxServices
       $ServerNames
     )
 
-    [OutputType([hashtable])]
+    [OutputType([System.Collections.Hashtable])]
     
     $Credential = Get-AutomationPSCredential -Name "SourceEnvironmentLinuxAdministrator"
     $ServicesNeedStopping = (Get-AutomationVariable -Name "LinuxServicesToStop").Split(",").ForEach({$_.Trim()})
@@ -82,7 +82,19 @@ workflow StopLinuxServices
                 {
                     Write-Verbose "WARNING: Server $Using:ServerName is pending a reboot."
                 }
+            }
+            catch
+            {
+                if ($session)
+                {
+                    Remove-WinSCPSession -WinSCPSession $session
+                }
 
+                return            
+            }
+            
+            try
+            {
                 $result = Invoke-WinSCPCommand -WinSCPSession $session -Command "sudo systemctl list-units --type service --all|grep .service|grep running"
                 $result.Check()
 
@@ -133,7 +145,10 @@ workflow StopLinuxServices
             return @{$Using:ServerName = $stoppedServices}
         }
 
-        $Workflow:Result += $Item
+        if ($Item)
+        {
+            [System.Collections.Hashtable]$Workflow:Result += $Item
+        }
     }
 
     Write-Output $Result
